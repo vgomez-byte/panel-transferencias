@@ -180,13 +180,14 @@ def preparar_tabla(df):
 # Condiciones de color para celdas de días
 def aplicar_color(dias):
     if pd.isna(dias):
-        return "white"
+        return ""
     if dias <= 30:
-        return "#c6efce"
+        return "#8FD18F"      # Verde claro
     elif dias <= 60:
-        return "#fff2cc"
+        return "#F4B942"      # Amarillo intenso
     else:
-        return "#f4cccc"
+        return "#E06666"      # Rojo claro
+    
 
 # Cacheo de tabla para evitar descarga repetitiva de base SQL
 #@st.cache_data
@@ -366,11 +367,11 @@ def color_dias(v, cerrado):
     if cerrado == "Sí" or pd.isna(v):
         return ""
     if v <= 30:
-        return "background-color: #c6efce"
+        return "background-color:#8FD18F; color:black; font-weight:bold"
     elif v <= 60:
-        return "background-color: #fff2cc"
+        return "background-color:#F4B942; color:black; font-weight:bold"
     else:
-        return "background-color: #f4cccc"
+        return "background-color:#E06666; color:black; font-weight:bold"
 
 def color_fila(row):
     return [
@@ -384,7 +385,12 @@ st.markdown("### 📋 Resumen por **Subasta, Mandante y Mandato**")
 styled = (
     resumen.style
     .apply(color_fila, axis=1)
-    .map(lambda v: "background-color: #d9ead3" if v == "Sí" else "", subset=["Cerrado"])
+    .map(
+        lambda v: "background-color: #d9ead3; color:black; font-weight:bold"
+        if v == "Sí"
+        else "",
+        subset=["Cerrado"]
+    )
 )
 st.dataframe(
     styled, 
@@ -458,8 +464,15 @@ for subasta, df_sub in df_filtrado.groupby("ID_remate", dropna=False):
         for col in df_mostrar.select_dtypes(include=["float", "int"]).columns:
             df_mostrar[col] = pd.to_numeric(df_mostrar[col], errors="coerce").astype("Int64")
 
-        styled = (df_mostrar.style
-            .map(lambda v: f"background-color: {aplicar_color(v)}", subset=["Días Totales"])
+        styled = (
+            df_mostrar.style
+            .map(
+                lambda v: (
+                    f"background-color: {aplicar_color(v)};"
+                    "color:black;font-weight:bold;"
+                ),
+                subset=["Días Totales"]
+            )
         )
         
         st.dataframe(
