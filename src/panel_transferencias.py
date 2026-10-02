@@ -1,23 +1,27 @@
 import streamlit as st
 import pandas as pd
-from config import supabase
+from config import supabase, TABLA
 import io
 
 # CONFIGURACIÓN BÁSICA
 st.set_page_config(page_title="Panel de Transferencias", layout="wide")
 
-# Carga de Base SQL
-#@st.cache_data
+# Carga de Base SQL (se guarda en caché 10 minutos; botón "Recargar datos" la refresca)
+@st.cache_data(ttl=600, show_spinner="Cargando datos desde Supabase...")
 def cargar_datos():
-    """Carga los datos desde Supabase."""
+    """Carga los datos de la última carga disponible en Supabase."""
+    ultima = obtener_marca_carga()
     todos = []
     inicio = 0
     tamano = 1000
     while True:
+        consulta = supabase.table(TABLA).select("*")
+        if ultima:
+            # Solo la versión más reciente (evita duplicados si una carga está en curso)
+            consulta = consulta.eq("fecha_actualizacion", ultima)
         respuesta = (
-            supabase
-            .table("transferencias_panel")
-            .select("*")
+            consulta
+            .order("id")  # orden fijo: sin esto la paginación puede repetir u omitir filas
             .range(inicio, inicio + tamano - 1)
             .execute()
         )
@@ -62,20 +66,26 @@ def cargar_datos():
     }, inplace=True)
     return df
 
-def obtener_fecha_actualizacion():
+def obtener_marca_carga():
+    """Devuelve la marca (texto) de la carga más reciente."""
     respuesta = (
         supabase
-        .table("transferencias_panel")
+        .table(TABLA)
         .select("fecha_actualizacion")
+        .not_.is_("fecha_actualizacion", "null")
         .order("fecha_actualizacion", desc=True)
         .limit(1)
         .execute()
     )
     if not respuesta.data:
         return None
-    return pd.to_datetime(
-        respuesta.data[0]["fecha_actualizacion"]
-    )
+    return respuesta.data[0]["fecha_actualizacion"]
+
+
+@st.cache_data(ttl=600)
+def obtener_fecha_actualizacion():
+    marca = obtener_marca_carga()
+    return pd.to_datetime(marca) if marca else None
 
 # Función auxiliar de cálculo estado de cierres, dias totales y dias en etapa actual
 def calcular_dias(df):
@@ -107,11 +117,21 @@ def calcular_dias(df):
         (df["fecha_transferencia"].notna()) | (cerrado_estado_lote)
     ).map({True: "Sí", False: "No"})
 
+    # Cerrados sin transferencia (NO APLICA / NO CONTRATA): no se les cuentan días
+    cerrado_sin_transf = cerrado_estado_lote & df["fecha_transferencia"].isna()
+
+    # Alerta de calidad: transferencia anterior a la fecha de remate
+    df["Fecha inconsistente"] = (
+        df["fecha_transferencia"].notna()
+        & df["fecha_subasta"].notna()
+        & (df["fecha_transferencia"] < df["fecha_subasta"])
+    )
+
     # Días totales
     dias = (
         df["fecha_transferencia"].fillna(hoy) - df["fecha_subasta"]
     ).dt.days
-    df["Días Totales"] = dias.clip(lower=0)
+    df["Días Totales"] = dias.clip(lower=0).where(~cerrado_sin_transf)
 
     # Días en etapa actual
     fechas_hitos = [
@@ -128,7 +148,8 @@ def calcular_dias(df):
     dias_etapa = (
         hoy - df["última_fecha"]
     ).dt.days
-    df["Días en etapa actual"] = dias_etapa.clip(lower=0)
+    # Los registros cerrados ya no están en ninguna etapa
+    df["Días en etapa actual"] = dias_etapa.clip(lower=0).where(df["Cerrado"] == "No")
     df.drop(columns=["última_fecha"], inplace=True)
     return df
 
@@ -145,15 +166,17 @@ def preparar_tabla(df):
         "fecha_ingreso_a_proveedor","fecha_solicitud_transferencia",
         "fecha_solicitud_alzamiento","fecha_rechazo",
         "fecha_reingreso","fecha_transferencia",
-        "Cerrado","ID_remate","fecha_subasta", "last_update"
+        "Cerrado","ID_remate","fecha_subasta", "last_update", "Fecha inconsistente"
     ]
 
     columnas_existentes = [c for c in columnas if c in df.columns]
     df = df[columnas_existentes].copy()
 
-    for c in ["lote","ID_remate"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+    # El ID de remate es TEXTO: hay subastas con código alfanumérico (M0001, M0017...)
+    if "ID_remate" in df.columns:
+        df["ID_remate"] = df["ID_remate"].astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    if "lote" in df.columns:
+        df["lote"] = pd.to_numeric(df["lote"], errors="coerce").astype("Int64")
 
     # Formato de fechas para mostrar
     fecha_cols = [c for c in df.columns if c.startswith("fecha_")] + ["last_update"]
@@ -189,8 +212,6 @@ def aplicar_color(dias):
         return "#E06666"      # Rojo claro
     
 
-# Cacheo de tabla para evitar descarga repetitiva de base SQL
-#@st.cache_data
 def preparar_datos(df):
     """Aplica los cálculos base de columnas derivadas."""
     df = calcular_dias(df)
@@ -209,6 +230,10 @@ else:
 
 st.title("📋 Panel de Seguimiento de Transferencias")
 
+if st.button("🔄 Recargar datos"):
+    st.cache_data.clear()
+    st.rerun()
+
 try:
     df = preparar_datos(cargar_datos())
 except Exception as e:
@@ -224,21 +249,36 @@ mandatos = sorted(df["Mandato"].dropna().unique().tolist())
 estados_lote = sorted(df["Estado lote"].dropna().unique().tolist())
 estados_transf = sorted(df["Estado transferencia"].dropna().unique().tolist())
 cerrados = ["Sí","No"]
-subastas = sorted([str(s) for s in df["Subasta"].dropna().unique().tolist()])
+subastas = (
+    df.sort_values("fecha_subasta", ascending=False)["Subasta"]
+    .dropna().astype(str).drop_duplicates().tolist()
+)
 
-sel_mandantes = st.sidebar.multiselect("Mandante", mandantes)
-sel_mandatos = st.sidebar.multiselect("Mandato", mandatos)
-sel_est_lote = st.sidebar.multiselect("Estado lote", estados_lote)
-sel_est_transf = st.sidebar.multiselect("Estado transferencia", estados_transf)
-sel_subastas = st.sidebar.multiselect("Subasta", subastas)
-sel_cerrado = st.sidebar.multiselect("Cerrado", cerrados, default=["No"])
-sel_ppu = st.sidebar.text_input("Buscar PPU")
-excluir_liq = st.sidebar.checkbox("Excluir mandatos LIQ", value=True)
-excluir_no_transferibles = st.sidebar.checkbox("Excluir no transferibles", value =True)
+FILTROS_VACIOS = {
+    "f_mandantes": [], "f_mandatos": [], "f_est_lote": [], "f_est_transf": [],
+    "f_subastas": [], "f_cerrado": [], "f_ppu": "", "f_excl_liq": False, "f_excl_no_transf": False,
+}
 
-if st.sidebar.button("Limpiar filtros"):
-    sel_mandantes=sel_mandatos=sel_est_lote=sel_est_transf=sel_subastas=[]
-    sel_ppu=""; sel_cerrado=[]; excluir_liq=False; excluir_no_transferibles=False
+def limpiar_filtros():
+    for clave, valor in FILTROS_VACIOS.items():
+        st.session_state[clave] = valor
+
+# Valores iniciales (solo la primera vez)
+st.session_state.setdefault("f_cerrado", ["No"])
+st.session_state.setdefault("f_excl_liq", True)
+st.session_state.setdefault("f_excl_no_transf", True)
+
+sel_mandantes = st.sidebar.multiselect("Mandante", mandantes, key="f_mandantes")
+sel_mandatos = st.sidebar.multiselect("Mandato", mandatos, key="f_mandatos")
+sel_est_lote = st.sidebar.multiselect("Estado lote", estados_lote, key="f_est_lote")
+sel_est_transf = st.sidebar.multiselect("Estado transferencia", estados_transf, key="f_est_transf")
+sel_subastas = st.sidebar.multiselect("Subasta", subastas, key="f_subastas")
+sel_cerrado = st.sidebar.multiselect("Cerrado", cerrados, key="f_cerrado")
+sel_ppu = st.sidebar.text_input("Buscar PPU", key="f_ppu")
+excluir_liq = st.sidebar.checkbox("Excluir mandatos LIQ", key="f_excl_liq")
+excluir_no_transferibles = st.sidebar.checkbox("Excluir no transferibles", key="f_excl_no_transf")
+
+st.sidebar.button("Limpiar filtros", on_click=limpiar_filtros)
 
 # ======================================================
 # APLICAR FILTROS
@@ -304,9 +344,10 @@ hoy = pd.Timestamp.now()
 hace_6_meses = hoy - pd.DateOffset(months=6)
 df_tmp = df.copy()
 
-# Filtrado de cerradas en últimos 6 meses (excluye mandatos LIQ)
+# Transferencias completadas de subastas de los últimos 6 meses (excluye mandatos LIQ).
+# Solo cuenta vehículos con fecha de transferencia: los NO APLICA / NO CONTRATA no tienen días.
 filtro_cerradas = (
-    (df_tmp["Cerrado"] == "Sí") &
+    (df_tmp["fecha_transferencia"].notna()) &
     (~df_tmp["Mandato"].astype(str).str.upper().eq("LIQ")) &
     (df_tmp["fecha_subasta"] >= hace_6_meses)
 )
@@ -337,8 +378,10 @@ df_aux = df_filtrado.copy()
 def dias_desde_subasta(r):
     if pd.isna(r["fecha_subasta"]):
         return None
-    if r["Cerrado"] == "Sí" and pd.notna(r["fecha_transferencia"]):
+    if pd.notna(r["fecha_transferencia"]):
         return max((r["fecha_transferencia"] - r["fecha_subasta"]).days, 0)
+    if r["Cerrado"] == "Sí":
+        return None  # cerrado sin transferencia (NO APLICA / NO CONTRATA)
     return max((hoy - r["fecha_subasta"]).days, 0)
 
 df_aux["Días desde subasta"] = df_aux.apply(dias_desde_subasta, axis=1)
@@ -352,13 +395,13 @@ resumen = (
         DiasDesde=("Días desde subasta", "mean")
     )
     .reset_index()
-    .sort_values(["ID_remate", "Mandante"], kind="stable")
+    .sort_values(["fecha_subasta", "ID_remate", "Mandante"], ascending=[False, True, True], kind="stable")
     .reset_index(drop=True)
 )
 
 resumen.rename(columns={"ID_remate": "ID Subasta"}, inplace=True)
 resumen.rename(columns={"fecha_subasta": "Fecha Subasta"}, inplace=True)
-resumen["DiasDesde"] = resumen["DiasDesde"].fillna(0).round(0).astype(int)
+resumen["DiasDesde"] = resumen["DiasDesde"].round(0).astype("Int64")
 resumen.rename(columns={"DiasDesde": "Días desde subasta"}, inplace=True)
 resumen["Fecha Subasta"] = resumen["Fecha Subasta"].dt.strftime("%d-%m-%Y")
 
@@ -380,6 +423,14 @@ def color_fila(row):
         else ""
         for col in row.index
     ]
+
+inconsistentes = df[df["Fecha inconsistente"]]
+if not inconsistentes.empty:
+    with st.expander(f"⚠️ {len(inconsistentes)} registros con fecha de transferencia anterior a la fecha de remate (revisar en la planilla)"):
+        st.dataframe(
+            inconsistentes[["Subasta", "PPU", "Mandante", "fecha_transferencia", "Estado transferencia"]],
+            width="stretch", hide_index=True,
+        )
 
 st.markdown("### 📋 Resumen por **Subasta, Mandante y Mandato**")
 styled = (
@@ -405,7 +456,7 @@ st.divider()
 # ======================================================
 
 # Filtrado para excel descargable con la misma información de pantalla
-df_export = df_filtrado.copy()
+df_export = df_filtrado.drop(columns=["Fecha inconsistente"])
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
     df_export.to_excel(writer, index=False, sheet_name="Detalle")
@@ -424,7 +475,12 @@ with t2:
 
 st.markdown("&nbsp;")
 
-for subasta, df_sub in df_filtrado.groupby("ID_remate", dropna=False):
+orden_subastas = (
+    df_filtrado.groupby("ID_remate", dropna=False)["fecha_subasta"].max()
+    .sort_values(ascending=False).index
+)
+for subasta in orden_subastas:
+    df_sub = df_filtrado[df_filtrado["ID_remate"].isna()] if pd.isna(subasta) else df_filtrado[df_filtrado["ID_remate"] == subasta]
     fecha_sub = df_sub["fecha_subasta"].iloc[0]
     fecha_fmt = fecha_sub.strftime("%d-%m-%Y") if pd.notna(fecha_sub) else "—"
     dias_transcurridos = (pd.Timestamp.now().normalize() - fecha_sub).days if pd.notna(fecha_sub) else 0
@@ -460,7 +516,7 @@ for subasta, df_sub in df_filtrado.groupby("ID_remate", dropna=False):
                 st.badge("Abierto", icon=":material/hourglass_empty:", color="red")
 
         # --- Tabla de detalle ---
-        df_mostrar = df_man.copy()
+        df_mostrar = df_man.drop(columns=["Fecha inconsistente"])
         for col in df_mostrar.select_dtypes(include=["float", "int"]).columns:
             df_mostrar[col] = pd.to_numeric(df_mostrar[col], errors="coerce").astype("Int64")
 

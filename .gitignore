@@ -2,3 +2,9 @@ __pycache__/
 *.py[cod]
 venv/
 .env
+# Datos operativos: no versionar
+datos/
+# Carpetas de trabajo locales
+_respaldo_*/
+_to_delete/
+logs/

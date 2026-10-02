@@ -2,26 +2,42 @@
 PANEL DE SEGUIMIENTO DE TRANSFERENCIAS
 ==============================
 
+FORMA RÁPIDA (doble clic)
+------------------------------
+actualizar_panel.bat
+    Sube la planilla oficial al panel. Ya NO hace falta copiar el CSV a datos:
+    lee directo la hoja BBDD de
+    GERENCIA DVL - Documentos\Planillas\Transferencias\Seguimiento Transferencias y TAG 2025 2.0.xlsx
+    (si la planilla está abierta en Excel de escritorio, ciérrela antes).
+    Si no encuentra la planilla, usa el archivo más reciente de la carpeta datos.
+
+abrir_panel.bat
+    Abre el panel en http://localhost:8501
+    Si ya estaba abierto, use el botón "Recargar datos" para ver la última carga.
+
+activar_actualizacion_automatica.bat   (doble clic UNA sola vez)
+    Cada 10 minutos revisa si cambió la planilla y, si cambió, actualiza el panel.
+    Registro en logs\actualizacion_auto.log
+    Para apagarlo: desactivar_actualizacion_automatica.bat
+
+Si la planilla cambia de lugar, agregue en .env:
+RUTA_EXCEL_TRANSFERENCIAS=C:\ruta\completa\de\la\planilla.xlsx
+
+------------------------------
+FORMA MANUAL (terminal)
+------------------------------
 1. Abrir una terminal en la carpeta del proyecto.
+2. venv\Scripts\activate
+3. (Opcional) Revisar sin subir nada:  python scripts/cargar_csv_supabase.py --dry-run
+4. Cargar:                            python scripts/cargar_csv_supabase.py
+   Esperar el mensaje IMPORTACIÓN TERMINADA.
+   Si la carga falla, se deshace sola y el panel sigue mostrando la versión anterior.
+5. Panel:                             streamlit run src/panel_transferencias.py
 
-2. Activar el entorno virtual
-venv\Scripts\activate
-
-3. Copiar el archivo Excel actualizado en la carpeta:
-datos\
-(Reemplazar el archivo anterior si corresponde).
-
-4. Cargar el archivo a Supabase
-python scripts/cargar_csv_supabase.py
-
-Esperar hasta que aparezca el mensaje:
-IMPORTACIÓN TERMINADA
-
-5. Ir a la carpeta src
-cd src
-
-6. Ejecutar el panel
-streamlit run panel_transferencias.py
-
-7. Abrir el navegador
-http://localhost:8501
+------------------------------
+CLAVES (.env)
+------------------------------
+SUPABASE_URL          = URL del proyecto
+SUPABASE_KEY          = clave anon (lectura, la usa el panel)
+SUPABASE_SERVICE_KEY  = clave service_role (escritura, solo para la carga; no compartir)
+Ver docs\seguridad_supabase.sql para activar la protección de la tabla.

@@ -32,7 +32,7 @@ rpds-py==0.27.1
 six==1.17.0
 smmap==5.0.2
 streamlit==1.50.0
-supabase
+supabase==2.31.0
 tenacity==9.1.2
 toml==0.10.2
 tornado==6.5.2
@@ -40,4 +40,4 @@ typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
 watchdog==6.0.0
-XlsxWriter
+XlsxWriter==3.2.9
